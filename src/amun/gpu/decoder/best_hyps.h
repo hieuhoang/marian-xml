@@ -133,7 +133,7 @@ class BestHyps : public BestHypsBase
       if (debug) std::cerr << "alignments for current hypotheses:\n";
 
       std::cerr << "Probs=" << Probs.Debug(0) << std::endl;
-      /*
+
 	    for (size_t i = 0; i < prevHyps.size(); ++i) {
 
         size_t max_pos = -1;
@@ -170,14 +170,14 @@ class BestHyps : public BestHypsBase
               if (debug) std::cerr << " continue with XML option" ;
               const Words &outputWords = xmlCovered[i][j].GetOption()->GetOutput();
               Word outputWord = outputWords[xmlCovered[i][j].GetPosition()];
-              auto ProbsPtx = Probs.begin();
-              ProbsPtx += Probs.dim(1) * i;
-              for(size_t k = 0; k < Probs.dim(1); k++, ProbsPtx++) {
+
+              for(size_t k = 0; k < Probs.dim(1); k++) {
                 if (k == outputWord) {
-                  *ProbsPtx = prevCost;
+                  Probs.set(prevCost, i, k, 0, 0);
                 }
                 else {
-                  *ProbsPtx += -999.0;
+                  float val = Probs.get(k, i, 0, 0);
+                  Probs.set(val - 999, i, k, 0, 0);
                 }
               }
               xmlCovered[i][j].Proceed();
@@ -195,9 +195,9 @@ class BestHyps : public BestHypsBase
               if (debug) std::cerr << " XML" ;
               const Words &outputWords = xmlCovered[i][j].GetOption()->GetOutput();
               Word outputWord = outputWords[0];
-              auto ProbsPtx = Probs.begin();
-              ProbsPtx += Probs.dim(1) * i + outputWord;
-              *ProbsPtx = 999.0 + prevCost;
+
+              Probs.set(999.0 + prevCost, i, outputWord, 0, 0);
+
               vXmlCoveragePenalty[i] += -999.0;
               //for(size_t k = 0; k < Probs.dim(1); k++, ProbsPtx++) {
               //  if (k == outputWord) {
@@ -236,11 +236,11 @@ class BestHyps : public BestHypsBase
         } // for (size_t j=0; j<xmlCovered[i].size() && !coveredByXml; j++) {
 
         if (god.Has("lexicon-bias") && !coveredByXml) {
-          auto ProbsPtx = Probs.begin() + Probs.dim(1) * i;
           for (auto& x: god.GetLexiconBias()) {
             size_t word = x.first;
             float bias = x.second;
-            *(ProbsPtx + word) += bias;
+            float val = Probs.get(i, word, 0, 0);
+            Probs.set(val + bias, i, word, 0, 0);
           }
         }
         if (debug) std::cerr << " cost:" << prevHyps[i]->GetCost();
@@ -258,13 +258,16 @@ class BestHyps : public BestHypsBase
           size_t translationLength = prevHyps[i]->GetLength();
           // if predicted word is EOS, then apply final penalty
           for(size_t j=0; j<xmlCovered[i].size(); j++) {
-            auto ProbsPtx = Probs.begin() + Probs.dim(1) * i + EOS_ID;
-            *ProbsPtx -= xmlCovered[i][j].GetPenalty( penaltyWeight, penaltyWindow, translationLength, false );
-            *ProbsPtx += xmlCovered[i][j].GetPenalty( penaltyWeight, penaltyWindow, translationLength, true );
+            float val = Probs.get(i, EOS_ID, 0, 0);
+
+            val -= xmlCovered[i][j].GetPenalty( penaltyWeight, penaltyWindow, translationLength, false );
+            val += xmlCovered[i][j].GetPenalty( penaltyWeight, penaltyWindow, translationLength, true );
+
+            Probs.set(val, i, EOS_ID, 0, 0);
           }
         }
       }
-      */
+
 
       if (forbidUNK_) {
         DisAllowUNK(Probs);
