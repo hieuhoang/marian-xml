@@ -132,6 +132,7 @@ class BestHyps : public BestHypsBase
       };
       if (debug) std::cerr << "alignments for current hypotheses:\n";
 
+      std::cerr << "Probs=" << Probs.Debug(0) << std::endl;
       /*
 	    for (size_t i = 0; i < prevHyps.size(); ++i) {
 
