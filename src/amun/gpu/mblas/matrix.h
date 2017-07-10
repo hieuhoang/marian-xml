@@ -329,16 +329,22 @@ class TMatrix : public BaseMatrix {
       return ind;
     }
 
-    const T &operator()(uint a, uint b, uint c, uint d) const
+    T get(uint a, uint b, uint c, uint d) const
     {
       uint id = indices2Id(a, b, c, d);
-      return data()[id];
+
+      T ret;
+      HANDLE_ERROR( cudaMemcpy(&ret, data_ + id, sizeof(T), cudaMemcpyDeviceToHost) );
+      //HANDLE_ERROR( cudaStreamSynchronize(CudaStreamHandler::GetStream()));
+
+      return ret;
     }
 
-    T &operator()(uint a, uint b, uint c, uint d)
+    void set(const T &val, uint a, uint b, uint c, uint d)
     {
       uint id = indices2Id(a, b, c, d);
-      return data()[id];
+
+      HANDLE_ERROR( cudaMemcpy(data_ + id, &val, sizeof(T), cudaMemcpyHostToDevice) );
     }
 
   private:
