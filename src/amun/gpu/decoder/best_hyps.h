@@ -2,10 +2,12 @@
 
 #include <map>
 #include <numeric>
+#include <boost/timer/timer.hpp>
 
 #include "common/scorer.h"
 #include "common/exception.h"
 #include "common/god.h"
+#include "common/utils.h"
 #include "gpu/mblas/matrix_functions.h"
 #include "gpu/mblas/nth_element.h"
 
@@ -18,25 +20,24 @@ class BestHyps : public BestHypsBase
 {
   public:
     BestHyps(const BestHyps &copy) = delete;
+
     BestHyps(const God &god)
-      : BestHypsBase(
-          !god.Get<bool>("allow-unk"),
-          god.Get<bool>("n-best"),
-          god.Get<std::vector<std::string>>("softmax-filter").size(),
-          god.Get<bool>("return-alignment") || god.Get<bool>("return-soft-alignment"),
-          god.GetScorerWeights()),
-        nthElement_(god.Get<size_t>("beam-size"), god.Get<size_t>("mini-batch"),
-                    mblas::CudaStreamHandler::GetStream()),
-        keys(god.Get<size_t>("beam-size") * god.Get<size_t>("mini-batch")),
-        Costs(god.Get<size_t>("beam-size") * god.Get<size_t>("mini-batch"))
-    {
-    }
+          : BestHypsBase(
+              !god.Get<bool>("allow-unk"),
+              god.Get<bool>("n-best"),
+              god.Get<std::vector<std::string>>("softmax-filter").size(),
+              god.Get<bool>("return-alignment") || god.Get<bool>("return-soft-alignment"),
+              god.GetScorerWeights()),
+            nthElement_(god.Get<size_t>("beam-size"), god.Get<size_t>("mini-batch")),
+            keys(god.Get<size_t>("beam-size") * god.Get<size_t>("mini-batch")),
+            Costs(god.Get<size_t>("beam-size") * god.Get<size_t>("mini-batch"))
+    {}
 
     void DisAllowUNK(mblas::Matrix& Prob) {
       SetColumn(Prob, UNK_ID, std::numeric_limits<float>::lowest());
     }
 
-    void FindBests(const std::vector<size_t>& beamSizes, mblas::Matrix& Probs,
+    void FindBests(const std::vector<uint>& beamSizes, mblas::Matrix& Probs,
                    std::vector<float>& outCosts,
                    std::vector<unsigned>& outKeys,
                    const bool isFirst) {
@@ -48,12 +49,18 @@ class BestHyps : public BestHypsBase
       std::vector<SoftAlignmentPtr> alignments;
       for (auto& scorer : scorers) {
         if (GPU::EncoderDecoder* encdec = dynamic_cast<GPU::EncoderDecoder*>(scorer.get())) {
-          auto& attention = encdec->GetAttention();
-          size_t attLength = attention.Cols();
+          const mblas::Matrix &attention = encdec->GetAttention();
+          size_t attLength = attention.dim(1);
 
-          alignments.emplace_back(new SoftAlignment(
-                attention.begin() + hypIndex * attLength,
-                attention.begin() + (hypIndex + 1) * attLength));
+          SoftAlignment *softAlignment = new SoftAlignment(attLength);
+          mblas::copy(
+              attention.data() + hypIndex * attLength,
+              attLength,
+              thrust::raw_pointer_cast(softAlignment->data()),
+              cudaMemcpyDeviceToHost
+          );
+
+          alignments.emplace_back(softAlignment);
         } else {
           amunmt_UTIL_THROW2("Return Alignment is allowed only with Nematus scorer.");
         }
@@ -67,8 +74,10 @@ class BestHyps : public BestHypsBase
         const std::vector<ScorerPtr>& scorers,
         const Words& filterIndices,
         std::vector<Beam>& beams,
-        std::vector<size_t>& beamSizes)
+        std::vector<uint>& beamSizes)
     {
+      BEGIN_TIMER("CalcBeam");
+
       using namespace mblas;
       bool debug = false;
 
@@ -99,17 +108,23 @@ class BestHyps : public BestHypsBase
       for (size_t i = 0; i < prevHyps.size(); ++i) {
         if (GPU::EncoderDecoder* encdec = dynamic_cast<GPU::EncoderDecoder*>(scorers[0].get())) {
           auto& attention = encdec->GetAttention();
-          size_t attLength = attention.Cols();
+          size_t attLength = attention.dim(1);
 
-          alignments.emplace_back(new SoftAlignment(
-              attention.begin() + i * attLength,
-              attention.begin() + (i + 1) * attLength));
+          SoftAlignment *softAlignment = new SoftAlignment(attLength);
+          mblas::copy(  attention.data() + i * attLength,
+                        attLength,
+                        thrust::raw_pointer_cast(softAlignment->data()),
+                        cudaMemcpyDeviceToHost
+                    );
+
+          alignments.emplace_back(softAlignment);
         }
         else {
           std::cerr << "FAILED";
         }
       }
 
+      /*
       float  penaltyWeight = god.Get<float>("xml-penalty-weight");
       size_t penaltyWindow = god.Get<float>("xml-penalty-window");
       HostVector<float> vXmlCoveragePenalty;
@@ -154,8 +169,8 @@ class BestHyps : public BestHypsBase
               const Words &outputWords = xmlCovered[i][j].GetOption()->GetOutput();
               Word outputWord = outputWords[xmlCovered[i][j].GetPosition()];
               auto ProbsPtx = Probs.begin();
-              ProbsPtx += Probs.Cols() * i;
-              for(size_t k = 0; k < Probs.Cols(); k++, ProbsPtx++) {
+              ProbsPtx += Probs.dim(1) * i;
+              for(size_t k = 0; k < Probs.dim(1); k++, ProbsPtx++) {
                 if (k == outputWord) {
                   *ProbsPtx = prevCost;
                 }
@@ -179,10 +194,10 @@ class BestHyps : public BestHypsBase
               const Words &outputWords = xmlCovered[i][j].GetOption()->GetOutput();
               Word outputWord = outputWords[0];
               auto ProbsPtx = Probs.begin();
-              ProbsPtx += Probs.Cols() * i + outputWord;
+              ProbsPtx += Probs.dim(1) * i + outputWord;
               *ProbsPtx = 999.0 + prevCost;
               vXmlCoveragePenalty[i] += -999.0;
-              //for(size_t k = 0; k < Probs.Cols(); k++, ProbsPtx++) {
+              //for(size_t k = 0; k < Probs.dim(1); k++, ProbsPtx++) {
               //  if (k == outputWord) {
               //    *ProbsPtx = prevCost;
               //  }
@@ -216,10 +231,10 @@ class BestHyps : public BestHypsBase
           vXmlCoveragePenalty[i] += penalty;
           if (debug) std::cerr << " penalty:" << allP << " add" << penalty;
 
-        }
+        } // for (size_t j=0; j<xmlCovered[i].size() && !coveredByXml; j++) {
 
         if (god.Has("lexicon-bias") && !coveredByXml) {
-          auto ProbsPtx = Probs.begin() + Probs.Cols() * i;
+          auto ProbsPtx = Probs.begin() + Probs.dim(1) * i;
           for (auto& x: god.GetLexiconBias()) {
             size_t word = x.first;
             float bias = x.second;
@@ -228,7 +243,7 @@ class BestHyps : public BestHypsBase
         }
         if (debug) std::cerr << " cost:" << prevHyps[i]->GetCost();
         if (debug) std::cerr << "\n";
-      }
+      } //  for (size_t i = 0; i < prevHyps.size(); ++i) {
 
       if (god.Get<bool>("xml-input") && xmlCovered[0].size()>0) {
         DeviceVector<float> XmlCoveragePenalty(vXmlCoveragePenalty.size());;
@@ -241,12 +256,13 @@ class BestHyps : public BestHypsBase
           size_t translationLength = prevHyps[i]->GetLength();
           // if predicted word is EOS, then apply final penalty
           for(size_t j=0; j<xmlCovered[i].size(); j++) {
-            auto ProbsPtx = Probs.begin() + Probs.Cols() * i + EOS_ID;
+            auto ProbsPtx = Probs.begin() + Probs.dim(1) * i + EOS_ID;
             *ProbsPtx -= xmlCovered[i][j].GetPenalty( penaltyWeight, penaltyWindow, translationLength, false );
             *ProbsPtx += xmlCovered[i][j].GetPenalty( penaltyWeight, penaltyWindow, translationLength, true );
           }
         }
       }
+      */
 
       if (forbidUNK_) {
         DisAllowUNK(Probs);
@@ -266,7 +282,7 @@ class BestHyps : public BestHypsBase
             std::vector<float> modelCosts(beamSizeSum);
             mblas::Matrix &currProbs = static_cast<mblas::Matrix&>(scorers[i]->GetProbs());
 
-            nthElement_.getValueByKey(modelCosts, currProbs.data());
+            nthElement_.getValueByKey(modelCosts, currProbs);
             breakDowns.push_back(modelCosts);
           }
       }
@@ -280,12 +296,12 @@ class BestHyps : public BestHypsBase
       }
 
       for (size_t i = 0; i < beamSizeSum; i++) {
-        size_t wordIndex = bestKeys[i] % Probs.Cols();
+        size_t wordIndex = bestKeys[i] % Probs.dim(1);
         if (isInputFiltered_) {
           wordIndex = filterIndices[wordIndex];
         }
 
-        size_t hypIndex  = bestKeys[i] / Probs.Cols();
+        size_t hypIndex  = bestKeys[i] / Probs.dim(1);
         float cost = bestCosts[i];
 
         HypothesisPtr hyp;
@@ -298,7 +314,7 @@ class BestHyps : public BestHypsBase
                                    xmlCovered[hypIndex]));
         }
 
-        if(returnAttentionWeights_) {
+        if(returnNBestList_) {
           hyp->GetCostBreakdown().resize(scorers.size());
           float sum = 0;
           for (size_t j = 0; j < scorers.size(); ++j) {
@@ -320,8 +336,11 @@ class BestHyps : public BestHypsBase
         }
 
         beams[batchMap[i]].push_back(hyp);
-      }
+      } // for (size_t i = 0; i < beamSizeSum; i++) {
+
+      PAUSE_TIMER("CalcBeam");
     }
+
 
   private:
     NthElement nthElement_;
