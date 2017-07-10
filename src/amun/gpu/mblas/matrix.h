@@ -62,6 +62,7 @@ class TMatrix : public BaseMatrix {
       dim_[1] = 0;
       dim_[2] = 0;
       dim_[3] = 0;
+      updateStrides();
     }
 
     TMatrix(size_t rows, size_t cols, size_t beam, size_t batches, bool zero = false)
@@ -70,7 +71,8 @@ class TMatrix : public BaseMatrix {
       dim_[1] = cols;
       dim_[2] = beam;
       dim_[3] = batches;
-      maxSize_ = size();
+      updateStrides();
+      maxSize_ = size_;
 
       HANDLE_ERROR( cudaMalloc(&data_, maxSize_ * sizeof(T)) );
       //std::cerr << "malloc data1:" << data_ << std::endl;
@@ -87,11 +89,17 @@ class TMatrix : public BaseMatrix {
 
     TMatrix(const TMatrix& m)
     : maxSize_(m.maxSize_)
+    , size_(m.size_)
     {
       dim_[0] = m.dim_[0];
       dim_[1] = m.dim_[1];
       dim_[2] = m.dim_[2];
       dim_[3] = m.dim_[3];
+
+      stride_[0] = m.stride_[0];
+      stride_[1] = m.stride_[1];
+      stride_[2] = m.stride_[2];
+      stride_[3] = m.stride_[3];
 
       HANDLE_ERROR( cudaMalloc(&data_, maxSize_ * sizeof(T)) );
       //std::cerr << "malloc data2:" << data_ << std::endl;
@@ -155,6 +163,8 @@ class TMatrix : public BaseMatrix {
       dim_[1] = cols;
       dim_[2] = beam;
       dim_[3] = batches;
+
+      updateStrides();
     }
 
     void NewSize(size_t rows, size_t cols, size_t beam = 1, size_t batches = 1) {
@@ -187,6 +197,8 @@ class TMatrix : public BaseMatrix {
       dim_[1] = cols;
       dim_[2] = beam;
       dim_[3] = batches;
+
+      updateStrides();
     }
 
     void reserve(size_t size)
@@ -250,6 +262,9 @@ class TMatrix : public BaseMatrix {
       return strm.str();
     }
 
+    size_t size() const
+    { return size_; }
+
     value_type* data() {
       return data_;
     }
@@ -261,13 +276,76 @@ class TMatrix : public BaseMatrix {
     void swap(TMatrix &other)
     {
       std::swap(dim_, other.dim_);
+      std::swap(size_, other.size_);
       std::swap(maxSize_, other.maxSize_);
       std::swap(data_, other.data_);
     }
 
+    uint stride(uint i) const
+    {
+      return stride_[i];
+    }
+
+    void updateStrides()
+    {
+      stride_[0] = dim_[1];
+      stride_[1] = 1;
+      stride_[2] = dim_[0] * dim_[1];
+      stride_[3] = dim_[0] * dim_[1] * dim_[2];
+
+      size_ = stride_[3] * dim_[3];
+    }
+
+    void id2Indices(uint id, uint *out) const
+    {
+      assert(id < size());
+
+      out[3] = id / stride(3);
+      id = id % stride(3);
+
+      out[2] = id / stride(2);
+      id = id % stride(2);
+
+      out[0] = id / stride(0);
+      id = id % stride(0);
+
+      out[1] = id / stride(1);
+    }
+
+    uint indices2Id(uint a, uint b, uint c, uint d) const
+    {
+      assert(a < dim(0));
+      assert(b < dim(1));
+      assert(c < dim(2));
+      assert(d < dim(3));
+
+      uint ind = 0;
+      ind += a * stride(0);
+      ind += b * stride(1);
+      ind += c * stride(2);
+      ind += d * stride(3);
+
+      assert(ind < size());
+      return ind;
+    }
+
+    const T &operator()(uint a, uint b, uint c, uint d) const
+    {
+      uint id = indices2Id(a, b, c, d);
+      return data()[id];
+    }
+
+    T &operator()(uint a, uint b, uint c, uint d)
+    {
+      uint id = indices2Id(a, b, c, d);
+      return data()[id];
+    }
+
   private:
     size_t dim_[SHAPE_SIZE];
+    size_t stride_[SHAPE_SIZE];
 
+    size_t size_;
     size_t maxSize_;
     T *data_;
 };
