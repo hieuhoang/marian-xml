@@ -124,7 +124,6 @@ class BestHyps : public BestHypsBase
         }
       }
 
-      /*
       float  penaltyWeight = god.Get<float>("xml-penalty-weight");
       size_t penaltyWindow = god.Get<float>("xml-penalty-window");
       HostVector<float> vXmlCoveragePenalty;
@@ -132,7 +131,9 @@ class BestHyps : public BestHypsBase
         vXmlCoveragePenalty.push_back( 0.0 );
       };
       if (debug) std::cerr << "alignments for current hypotheses:\n";
-      for (size_t i = 0; i < prevHyps.size(); ++i) {
+
+      /*
+	    for (size_t i = 0; i < prevHyps.size(); ++i) {
 
         size_t max_pos = -1;
         float max_value = 0;
